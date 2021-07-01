@@ -304,12 +304,11 @@ sb_charMatches(const ENCODING *enc, const char *p, int c) {
 #  define CHAR_MATCHES(enc, p, c) (*(p) == c)
 #endif
 
-/* Fallthrough statements are unreachable. Clang warns if they are annotated,
-   gcc warns if they are not. */
-#if defined __clang__
-#  define FALLTHROUGH_IF_REACHABLE
-#else
+/* Fallthrough statements are reachable only when compiled with XML_MIN_SIZE. */
+#if defined(XML_MIN_SIZE)
 #  define FALLTHROUGH_IF_REACHABLE FALLTHROUGH
+#else
+#  define FALLTHROUGH_IF_REACHABLE
 #endif
 
 #define PREFIX(ident) normal_##ident
