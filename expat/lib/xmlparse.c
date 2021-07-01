@@ -4819,8 +4819,8 @@ doProlog(XML_Parser parser, const ENCODING *enc, const char *s, const char *end,
           return XML_ERROR_NO_MEMORY;
         parser->m_declEntity->publicId = NULL;
       }
-#endif /* XML_DTD */
       FALLTHROUGH;
+#endif /* XML_DTD */
     case XML_ROLE_ENTITY_SYSTEM_ID:
       if (dtd->keepProcessing && parser->m_declEntity) {
         parser->m_declEntity->systemId
