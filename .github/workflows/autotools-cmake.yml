@@ -93,7 +93,8 @@ jobs:
         mkdir build_autotools
         cd build_autotools
         ../configure \
-            --libdir='${exec_prefix}/lib123' \
+            --includedir='${prefix}/inc123/inc456' \
+            --libdir='${exec_prefix}/lib123/lib456' \
             ${{matrix.configure_args}}
         make install DESTDIR="${PWD}"/ROOT
         find ROOT | sort | xargs ls -ld
@@ -105,7 +106,8 @@ jobs:
         mkdir build_cmake
         cd build_cmake
         cmake \
-            -DCMAKE_INSTALL_LIBDIR=lib123 \
+            -DCMAKE_INSTALL_INCLUDEDIR=inc123/inc456 \
+            -DCMAKE_INSTALL_LIBDIR=lib123/lib456 \
             ${{matrix.cmake_args}} \
             ..
         make install DESTDIR="${PWD}"/ROOT
