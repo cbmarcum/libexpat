@@ -118,18 +118,6 @@ jobs:
         set -x
         cd expat/expat-*.*.*/
 
-        if [[ "${{ matrix.configure_args }}" == *mingw* ]]; then
-          # There is one known difference between Autotools and CMake for MinGW:
-          #   Autotools: usr/local/bin/libexpat-<major>.dll
-          #   CMake:     usr/local/bin/libexpat.dll
-          # We patch the Autotools side in line here to get the differ below to empty
-          mv build_autotools/ROOT/usr/local/bin/libexpat{-*,}.dll
-          ( cd build_autotools/ROOT/usr/local/lib*/cmake/expat-*/ \
-              && sed 's,libexpat-[0-9]\+\.dll,libexpat.dll,g' expat-noconfig.cmake > expat-noconfig-patched.cmake \
-              && ! diff -u0 expat-noconfig{,-patched}.cmake \
-              && mv expat-noconfig{-patched,}.cmake )
-        fi
-
         diff \
             --recursive \
             --unified \
