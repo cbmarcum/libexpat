@@ -54,6 +54,14 @@
 #  include <wchar.h>
 #endif
 
+enum ExitCode {
+  XMLWF_EXIT_SUCCESS = 0,
+  XMLWF_EXIT_INTERNAL_ERROR = 1,
+  XMLWF_EXIT_NOT_WELLFORMED = 2,
+  XMLWF_EXIT_OUTPUT_ERROR = 3,
+  XMLWF_EXIT_USAGE_ERROR = 4,
+};
+
 /* Structures for handler user data */
 typedef struct NotationList {
   struct NotationList *next;
