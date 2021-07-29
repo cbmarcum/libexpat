@@ -909,6 +909,19 @@ usage(const XML_Char *prog, int rc) {
 int wmain(int argc, XML_Char **argv);
 #endif
 
+#define XMLWF_SHIFT_ARG_INTO(constCharStarTarget, argc, argv, i, j)            \
+  {                                                                            \
+    if (argv[i][j + 1] == T('\0')) {                                           \
+      if (++i == argc)                                                         \
+        usage(argv[0], XMLWF_EXIT_USAGE_ERROR);                                \
+      constCharStarTarget = argv[i];                                           \
+    } else {                                                                   \
+      constCharStarTarget = argv[i] + j + 1;                                   \
+    }                                                                          \
+    i++;                                                                       \
+    j = 0;                                                                     \
+  }
+
 int
 tmain(int argc, XML_Char **argv) {
   int i, j;
