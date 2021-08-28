@@ -74,6 +74,10 @@ typedef unsigned __int32 uintptr_t;
 
 #ifdef _WIN32
 #  include "winconfig.h"
+#include <float.h>
+#ifndef isnan
+#define isnan _isnan
+#endif
 #elif defined(HAVE_EXPAT_CONFIG_H)
 #  include <expat_config.h>
 #endif /* ndef _WIN32 */
@@ -917,7 +921,7 @@ generate_hash_secret_salt(XML_Parser parser) {
     return ENTROPY_DEBUG("fallback(4)", entropy * 2147483647);
   } else {
     return ENTROPY_DEBUG("fallback(8)",
-                         entropy * (unsigned long)2305843009213693951ULL);
+                         entropy * (unsigned long long)2305843009213693951ULL);
   }
 #endif
 }
@@ -7219,13 +7223,14 @@ accountingGetCurrentAmplification(XML_Parser rootParser) {
 static void
 accountingReportStats(XML_Parser originParser, const char *epilog) {
   const XML_Parser rootParser = getRootParserOf(originParser, NULL);
+  float amplificationFactor;
   assert(! rootParser->m_parentParser);
 
   if (rootParser->m_accounting.debugLevel < 1) {
     return;
   }
 
-  const float amplificationFactor
+  amplificationFactor
       = accountingGetCurrentAmplification(rootParser);
   fprintf(stderr,
           "expat: Accounting(%p): Direct " EXPAT_FMT_ULL(
@@ -7245,6 +7250,11 @@ accountingReportDiff(XML_Parser rootParser,
                      unsigned int levelsAwayFromRootParser, const char *before,
                      const char *after, ptrdiff_t bytesMore, int source_line,
                      enum XML_Account account) {
+  const char ellipis[] = "[..]";
+  const size_t ellipsisLength = sizeof(ellipis) /* because compile-time */ - 1;
+  const unsigned int contextLength = 10;
+  const char *walker = before;
+
   assert(! rootParser->m_parentParser);
 
   fprintf(stderr,
@@ -7252,12 +7262,7 @@ accountingReportDiff(XML_Parser rootParser,
           bytesMore, (account == XML_ACCOUNT_DIRECT) ? "DIR" : "EXP",
           levelsAwayFromRootParser, source_line, 10, "");
 
-  const char ellipis[] = "[..]";
-  const size_t ellipsisLength = sizeof(ellipis) /* because compile-time */ - 1;
-  const unsigned int contextLength = 10;
-
   /* Note: Performance is of no concern here */
-  const char *walker = before;
   if ((rootParser->m_accounting.debugLevel >= 3)
       || (after - before)
              <= (ptrdiff_t)(contextLength + ellipsisLength + contextLength)) {
@@ -7281,6 +7286,14 @@ static XML_Bool
 accountingDiffTolerated(XML_Parser originParser, int tok, const char *before,
                         const char *after, int source_line,
                         enum XML_Account account) {
+  unsigned int levelsAwayFromRootParser;
+  XML_Parser rootParser;
+  int isDirect;
+  ptrdiff_t bytesMore;
+  XmlBigCount * additionTarget;
+  XmlBigCount countBytesOutput;
+  float amplificationFactor;
+  XML_Bool tolerated;
   /* Note: We need to check the token type *first* to be sure that
    *       we can even access variable <after>, safely.
    *       E.g. for XML_TOK_NONE <after> may hold an invalid pointer. */
@@ -7295,16 +7308,15 @@ accountingDiffTolerated(XML_Parser originParser, int tok, const char *before,
   if (account == XML_ACCOUNT_NONE)
     return XML_TRUE; /* because these bytes have been accounted for, already */
 
-  unsigned int levelsAwayFromRootParser;
-  const XML_Parser rootParser
+  rootParser
       = getRootParserOf(originParser, &levelsAwayFromRootParser);
   assert(! rootParser->m_parentParser);
 
-  const int isDirect
+  isDirect
       = (account == XML_ACCOUNT_DIRECT) && (originParser == rootParser);
-  const ptrdiff_t bytesMore = after - before;
+  bytesMore = after - before;
 
-  XmlBigCount *const additionTarget
+  additionTarget
       = isDirect ? &rootParser->m_accounting.countBytesDirect
                  : &rootParser->m_accounting.countBytesIndirect;
 
@@ -7313,12 +7325,12 @@ accountingDiffTolerated(XML_Parser originParser, int tok, const char *before,
     return XML_FALSE;
   *additionTarget += bytesMore;
 
-  const XmlBigCount countBytesOutput
+  countBytesOutput
       = rootParser->m_accounting.countBytesDirect
         + rootParser->m_accounting.countBytesIndirect;
-  const float amplificationFactor
+  amplificationFactor
       = accountingGetCurrentAmplification(rootParser);
-  const XML_Bool tolerated
+  tolerated
       = (countBytesOutput < rootParser->m_accounting.activationThresholdBytes)
         || (amplificationFactor
             <= rootParser->m_accounting.maximumAmplificationFactor);
@@ -7349,14 +7361,15 @@ testingAccountingGetCountBytesIndirect(XML_Parser parser) {
 static void
 entityTrackingReportStats(XML_Parser rootParser, ENTITY *entity,
                           const char *action, int sourceLine) {
+  const char * entityName;
   assert(! rootParser->m_parentParser);
   if (rootParser->m_entity_stats.debugLevel < 1)
     return;
 
 #  if defined(XML_UNICODE)
-  const char *const entityName = "[..]";
+  entityName = "[..]";
 #  else
-  const char *const entityName = entity->name;
+  entityName = entity->name;
 #  endif
 
   fprintf(
@@ -7936,14 +7949,17 @@ unsignedCharToPrintable(unsigned char c) {
 static unsigned long
 getDebugLevel(const char *variableName, unsigned long defaultDebugLevel) {
   const char *const valueOrNull = getenv(variableName);
+  const char * value;
+  char *afterValue;
+  unsigned long debugLevel;
   if (valueOrNull == NULL) {
     return defaultDebugLevel;
   }
-  const char *const value = valueOrNull;
+  value = valueOrNull;
 
   errno = 0;
-  char *afterValue = (char *)value;
-  unsigned long debugLevel = strtoul(value, &afterValue, 10);
+  afterValue = (char *)value;
+  debugLevel = strtoul(value, &afterValue, 10);
   if ((errno != 0) || (afterValue[0] != '\0')) {
     errno = 0;
     return defaultDebugLevel;
