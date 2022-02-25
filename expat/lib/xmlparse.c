@@ -3448,14 +3448,16 @@ storeAtts(XML_Parser parser, const ENCODING *enc, const char *attStr,
   if (nPrefixes) {
     int j; /* hash table index */
     unsigned long version = parser->m_nsAttsVersion;
+    unsigned int nsAttsSize;
+    unsigned char oldNsAttsPower;
 
     /* Detect and prevent invalid shift */
     if (parser->m_nsAttsPower >= sizeof(unsigned int) * 8 /* bits per byte */) {
       return XML_ERROR_NO_MEMORY;
     }
 
-    unsigned int nsAttsSize = 1u << parser->m_nsAttsPower;
-    unsigned char oldNsAttsPower = parser->m_nsAttsPower;
+    nsAttsSize = 1u << parser->m_nsAttsPower;
+    oldNsAttsPower = parser->m_nsAttsPower;
     /* size of hash table must be at least 2 * (# of prefixed attributes) */
     if ((nPrefixes << 1)
         >> parser->m_nsAttsPower) { /* true for m_nsAttsPower = 0 */
@@ -3776,6 +3778,7 @@ addBinding(XML_Parser parser, PREFIX *prefix, const ATTRIBUTE_ID *attId,
     b = parser->m_freeBindingList;
     if (len > b->uriAlloc) {
 
+      XML_Char *temp;
       /* Detect and prevent integer overflow */
       if (len > INT_MAX - EXPAND_SPARE) {
         return XML_ERROR_NO_MEMORY;
@@ -3791,7 +3794,7 @@ addBinding(XML_Parser parser, PREFIX *prefix, const ATTRIBUTE_ID *attId,
       }
 #endif
 
-      XML_Char *temp = (XML_Char *)REALLOC(
+      temp = (XML_Char *)REALLOC(
           parser, b->uri, sizeof(XML_Char) * (len + EXPAND_SPARE));
       if (temp == NULL)
         return XML_ERROR_NO_MEMORY;
@@ -5142,12 +5145,13 @@ doProlog(XML_Parser parser, const ENCODING *enc, const char *s, const char *end,
       if (parser->m_prologState.level >= parser->m_groupSize) {
         if (parser->m_groupSize) {
           {
+            char * new_connector;
             /* Detect and prevent integer overflow */
             if (parser->m_groupSize > (unsigned int)(-1) / 2u) {
               return XML_ERROR_NO_MEMORY;
             }
 
-            char *const new_connector = (char *)REALLOC(
+            new_connector = (char *)REALLOC(
                 parser, parser->m_groupConnector, parser->m_groupSize *= 2);
             if (new_connector == NULL) {
               parser->m_groupSize /= 2;
@@ -5157,6 +5161,7 @@ doProlog(XML_Parser parser, const ENCODING *enc, const char *s, const char *end,
           }
 
           if (dtd->scaffIndex) {
+            int *new_scaff_index;
             /* Detect and prevent integer overflow.
              * The preprocessor guard addresses the "always false" warning
              * from -Wtype-limits on platforms where
@@ -5167,7 +5172,7 @@ doProlog(XML_Parser parser, const ENCODING *enc, const char *s, const char *end,
             }
 #endif
 
-            int *const new_scaff_index = (int *)REALLOC(
+            new_scaff_index = (int *)REALLOC(
                 parser, dtd->scaffIndex, parser->m_groupSize * sizeof(int));
             if (new_scaff_index == NULL)
               return XML_ERROR_NO_MEMORY;
@@ -6243,13 +6248,14 @@ defineAttribute(ELEMENT_TYPE *type, ATTRIBUTE_ID *attId, XML_Bool isCdata,
       }
     } else {
       DEFAULT_ATTRIBUTE *temp;
+      int count;
 
       /* Detect and prevent integer overflow */
       if (type->allocDefaultAtts > INT_MAX / 2) {
         return 0;
       }
 
-      int count = type->allocDefaultAtts * 2;
+      count = type->allocDefaultAtts * 2;
 
       /* Detect and prevent integer overflow.
        * The preprocessor guard addresses the "always false" warning
@@ -6911,22 +6917,26 @@ lookup(XML_Parser parser, HASH_TABLE *table, KEY name, size_t createSize) {
     /* check for overflow (table is half full) */
     if (table->used >> (table->power - 1)) {
       unsigned char newPower = table->power + 1;
+      size_t newSize;
+      unsigned long newMask;
+      size_t tsize;
+      NAMED **newV;
 
       /* Detect and prevent invalid shift */
       if (newPower >= sizeof(unsigned long) * 8 /* bits per byte */) {
         return NULL;
       }
 
-      size_t newSize = (size_t)1 << newPower;
-      unsigned long newMask = (unsigned long)newSize - 1;
+      newSize = (size_t)1 << newPower;
+      newMask = (unsigned long)newSize - 1;
 
       /* Detect and prevent integer overflow */
       if (newSize > (size_t)(-1) / sizeof(NAMED *)) {
         return NULL;
       }
 
-      size_t tsize = newSize * sizeof(NAMED *);
-      NAMED **newV = (NAMED **)table->mem->malloc_fcn(tsize);
+      tsize = newSize * sizeof(NAMED *);
+      newV = (NAMED **)table->mem->malloc_fcn(tsize);
       if (! newV)
         return NULL;
       memset(newV, 0, tsize);
@@ -7324,6 +7334,10 @@ build_model(XML_Parser parser) {
   DTD *const dtd = parser->m_dtd; /* save one level of indirection */
   XML_Content *ret;
   XML_Char *str; /* the current string writing location */
+  size_t allocsize;
+  XML_Content *dest; /* tree node writing location, moves upwards */
+  XML_Content *destLimit;
+  XML_Content *jobDest; /* next free writing location in target array */
 
   /* Detect and prevent integer overflow.
    * The preprocessor guard addresses the "always false" warning
@@ -7342,7 +7356,7 @@ build_model(XML_Parser parser) {
     return NULL;
   }
 
-  const size_t allocsize = (dtd->scaffCount * sizeof(XML_Content)
+  allocsize = (dtd->scaffCount * sizeof(XML_Content)
                             + (dtd->contentStringLen * sizeof(XML_Char)));
 
   ret = (XML_Content *)MALLOC(parser, allocsize);
@@ -7398,9 +7412,9 @@ build_model(XML_Parser parser) {
    *
    * - The algorithm repeats until all target array indices have been processed.
    */
-  XML_Content *dest = ret; /* tree node writing location, moves upwards */
-  XML_Content *const destLimit = &ret[dtd->scaffCount];
-  XML_Content *jobDest = ret; /* next free writing location in target array */
+  dest = ret; /* tree node writing location, moves upwards */
+  destLimit = &ret[dtd->scaffCount];
+  jobDest = ret; /* next free writing location in target array */
   str = (XML_Char *)&ret[dtd->scaffCount];
 
   /* Add the starting job, the root node (index 0) of the source tree  */
