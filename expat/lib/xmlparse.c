@@ -452,7 +452,8 @@ static enum XML_Error doContent(XML_Parser parser, int startTagLevel,
 								XML_Bool haveMore, enum XML_Account account);
 static enum XML_Error doCdataSection(XML_Parser parser, const ENCODING *,
                                      const char **startPtr, const char *end,
-                                     const char **nextPtr, XML_Bool haveMore);
+                                     const char **nextPtr, XML_Bool haveMore,
+                                     enum XML_Account account);
 #ifdef XML_DTD
 static enum XML_Error doIgnoreSection(XML_Parser parser, const ENCODING *,
                                       const char **startPtr, const char *end,
@@ -707,6 +708,7 @@ XML_Parser XMLCALL
 XML_ParserCreateNS(const XML_Char *encodingName, XML_Char nsSep) {
   XML_Char tmp[2];
   *tmp = nsSep;
+  tmp[1] = 0;
   return XML_ParserCreate_MM(encodingName, NULL, tmp);
 }
 
@@ -1333,6 +1335,7 @@ XML_ExternalEntityParserCreate(XML_Parser oldParser, const XML_Char *context,
   if (parser->m_ns) {
     XML_Char tmp[2];
     *tmp = parser->m_namespaceSeparator;
+    tmp[1] = 0;
     parser = parserCreate(encodingName, &parser->m_mem, tmp, newDtd);
   } else {
     parser = parserCreate(encodingName, &parser->m_mem, NULL, newDtd);
@@ -1971,6 +1974,12 @@ XML_ParseBuffer(XML_Parser parser, int len, int isFinal) {
     parser->m_errorCode = XML_ERROR_FINISHED;
     return XML_STATUS_ERROR;
   case XML_INITIALIZED:
+    /* Has someone called XML_GetBuffer successfully before? */
+    if (! parser->m_bufferPtr) {
+      parser->m_errorCode = XML_ERROR_NO_BUFFER;
+      return XML_STATUS_ERROR;
+    }
+
     if (parser->m_parentParser == NULL && ! startParsing(parser)) {
       parser->m_errorCode = XML_ERROR_NO_MEMORY;
       return XML_STATUS_ERROR;
@@ -2049,6 +2058,11 @@ XML_GetBuffer(XML_Parser parser, int len) {
     keep = (int)EXPAT_SAFE_PTR_DIFF(parser->m_bufferPtr, parser->m_buffer);
     if (keep > XML_CONTEXT_BYTES)
       keep = XML_CONTEXT_BYTES;
+    /* Detect and prevent integer overflow */
+    if (keep > INT_MAX - neededSize) {
+      parser->m_errorCode = XML_ERROR_NO_MEMORY;
+      return NULL;
+    }
     neededSize += keep;
 #endif /* defined XML_CONTEXT_BYTES */
     if (neededSize
@@ -2538,6 +2552,7 @@ storeRawNames(XML_Parser parser) {
   while (tag) {
     int bufSize;
     int nameLen = sizeof(XML_Char) * (tag->name.strLen + 1);
+    size_t rawNameLen;
     char *rawNameBuf = tag->buf + nameLen;
     /* Stop if already stored.  Since m_tagStack is a stack, we can stop
        at the first entry that has already been copied; everything
@@ -2549,7 +2564,11 @@ storeRawNames(XML_Parser parser) {
     /* For re-use purposes we need to ensure that the
        size of tag->buf is a multiple of sizeof(XML_Char).
     */
-    bufSize = nameLen + ROUND_UP(tag->rawNameLength, sizeof(XML_Char));
+    rawNameLen = ROUND_UP(tag->rawNameLength, sizeof(XML_Char));
+    /* Detect and prevent integer overflow. */
+    if (rawNameLen > (size_t)INT_MAX - nameLen)
+      return XML_FALSE;
+    bufSize = nameLen + (int)rawNameLen;
     if (bufSize > tag->bufEnd - tag->buf) {
       char *temp = (char *)REALLOC(parser, tag->buf, bufSize);
       if (temp == NULL)
@@ -3078,7 +3097,7 @@ doContent(XML_Parser parser, int startTagLevel, const ENCODING *enc,
       /* END disabled code */
       else if (parser->m_defaultHandler)
         reportDefault(parser, enc, s, next);
-      result = doCdataSection(parser, enc, &next, end, nextPtr, haveMore);
+      result = doCdataSection(parser, enc, &next, end, nextPtr, haveMore, account);
       if (result != XML_ERROR_NONE)
         return result;
       else if (! next) {
@@ -3240,13 +3259,38 @@ storeAtts(XML_Parser parser, const ENCODING *enc, const char *attStr,
 
   /* get the attributes from the tokenizer */
   n = XmlGetAttributes(enc, attStr, parser->m_attsSize, parser->m_atts);
+
+  /* Detect and prevent integer overflow */
+  if (n > INT_MAX - nDefaultAtts) {
+    return XML_ERROR_NO_MEMORY;
+  }
+
   if (n + nDefaultAtts > parser->m_attsSize) {
     int oldAttsSize = parser->m_attsSize;
     ATTRIBUTE *temp;
 #ifdef XML_ATTR_INFO
     XML_AttrInfo *temp2;
 #endif
+
+    /* Detect and prevent integer overflow */
+    if ((nDefaultAtts > INT_MAX - INIT_ATTS_SIZE)
+        || (n > INT_MAX - (nDefaultAtts + INIT_ATTS_SIZE))) {
+      return XML_ERROR_NO_MEMORY;
+    }
+
     parser->m_attsSize = n + nDefaultAtts + INIT_ATTS_SIZE;
+
+    /* Detect and prevent integer overflow.
+     * The preprocessor guard addresses the "always false" warning
+     * from -Wtype-limits on platforms where
+     * sizeof(unsigned int) < sizeof(size_t), e.g. on x86_64. */
+#if UINT_MAX >= SIZE_MAX
+    if ((unsigned)parser->m_attsSize > (size_t)(-1) / sizeof(ATTRIBUTE)) {
+      parser->m_attsSize = oldAttsSize;
+      return XML_ERROR_NO_MEMORY;
+    }
+#endif
+
     temp = (ATTRIBUTE *)REALLOC(parser, (void *)parser->m_atts,
                                 parser->m_attsSize * sizeof(ATTRIBUTE));
     if (temp == NULL) {
@@ -3255,6 +3299,17 @@ storeAtts(XML_Parser parser, const ENCODING *enc, const char *attStr,
     }
     parser->m_atts = temp;
 #ifdef XML_ATTR_INFO
+    /* Detect and prevent integer overflow.
+     * The preprocessor guard addresses the "always false" warning
+     * from -Wtype-limits on platforms where
+     * sizeof(unsigned int) < sizeof(size_t), e.g. on x86_64. */
+#  if UINT_MAX >= SIZE_MAX
+    if ((unsigned)parser->m_attsSize > (size_t)(-1) / sizeof(XML_AttrInfo)) {
+      parser->m_attsSize = oldAttsSize;
+      return XML_ERROR_NO_MEMORY;
+    }
+#  endif
+
     temp2 = (XML_AttrInfo *)REALLOC(parser, (void *)parser->m_attInfo,
                                     parser->m_attsSize * sizeof(XML_AttrInfo));
     if (temp2 == NULL) {
@@ -3393,7 +3448,13 @@ storeAtts(XML_Parser parser, const ENCODING *enc, const char *attStr,
   if (nPrefixes) {
     int j; /* hash table index */
     unsigned long version = parser->m_nsAttsVersion;
-    int nsAttsSize = (int)1 << parser->m_nsAttsPower;
+
+    /* Detect and prevent invalid shift */
+    if (parser->m_nsAttsPower >= sizeof(unsigned int) * 8 /* bits per byte */) {
+      return XML_ERROR_NO_MEMORY;
+    }
+
+    unsigned int nsAttsSize = 1u << parser->m_nsAttsPower;
     unsigned char oldNsAttsPower = parser->m_nsAttsPower;
     /* size of hash table must be at least 2 * (# of prefixed attributes) */
     if ((nPrefixes << 1)
@@ -3404,7 +3465,28 @@ storeAtts(XML_Parser parser, const ENCODING *enc, const char *attStr,
         ;
       if (parser->m_nsAttsPower < 3)
         parser->m_nsAttsPower = 3;
-      nsAttsSize = (int)1 << parser->m_nsAttsPower;
+
+      /* Detect and prevent invalid shift */
+      if (parser->m_nsAttsPower >= sizeof(nsAttsSize) * 8 /* bits per byte */) {
+        /* Restore actual size of memory in m_nsAtts */
+        parser->m_nsAttsPower = oldNsAttsPower;
+        return XML_ERROR_NO_MEMORY;
+      }
+
+      nsAttsSize = 1u << parser->m_nsAttsPower;
+
+      /* Detect and prevent integer overflow.
+       * The preprocessor guard addresses the "always false" warning
+       * from -Wtype-limits on platforms where
+       * sizeof(unsigned int) < sizeof(size_t), e.g. on x86_64. */
+#if UINT_MAX >= SIZE_MAX
+      if (nsAttsSize > (size_t)(-1) / sizeof(NS_ATT)) {
+        /* Restore actual size of memory in m_nsAtts */
+        parser->m_nsAttsPower = oldNsAttsPower;
+        return XML_ERROR_NO_MEMORY;
+      }
+#endif
+
       temp = (NS_ATT *)REALLOC(parser, parser->m_nsAtts,
                                nsAttsSize * sizeof(NS_ATT));
       if (! temp) {
@@ -3562,9 +3644,31 @@ storeAtts(XML_Parser parser, const ENCODING *enc, const char *attStr,
   tagNamePtr->prefixLen = prefixLen;
   for (i = 0; localPart[i++];)
     ; /* i includes null terminator */
+
+  /* Detect and prevent integer overflow */
+  if (binding->uriLen > INT_MAX - prefixLen
+      || i > INT_MAX - (binding->uriLen + prefixLen)) {
+    return XML_ERROR_NO_MEMORY;
+  }
+
   n = i + binding->uriLen + prefixLen;
   if (n > binding->uriAlloc) {
     TAG *p;
+
+    /* Detect and prevent integer overflow */
+    if (n > INT_MAX - EXPAND_SPARE) {
+      return XML_ERROR_NO_MEMORY;
+    }
+    /* Detect and prevent integer overflow.
+     * The preprocessor guard addresses the "always false" warning
+     * from -Wtype-limits on platforms where
+     * sizeof(unsigned int) < sizeof(size_t), e.g. on x86_64. */
+#if UINT_MAX >= SIZE_MAX
+    if ((unsigned)(n + EXPAND_SPARE) > (size_t)(-1) / sizeof(XML_Char)) {
+      return XML_ERROR_NO_MEMORY;
+    }
+#endif
+
     uri = (XML_Char *)MALLOC(parser, (n + EXPAND_SPARE) * sizeof(XML_Char));
     if (! uri)
       return XML_ERROR_NO_MEMORY;
@@ -3644,6 +3748,17 @@ addBinding(XML_Parser parser, PREFIX *prefix, const ATTRIBUTE_ID *attId,
     if (! mustBeXML && isXMLNS
         && (len > xmlnsLen || uri[len] != xmlnsNamespace[len]))
       isXMLNS = XML_FALSE;
+
+    // NOTE: While Expat does not validate namespace URIs against RFC 3986,
+    //       we have to at least make sure that the XML processor on top of
+    //       Expat (that is splitting tag names by namespace separator into
+    //       2- or 3-tuples (uri-local or uri-local-prefix)) cannot be confused
+    //       by an attacker putting additional namespace separator characters
+    //       into namespace declarations.  That would be ambiguous and not to
+    //       be expected.
+    if (parser->m_ns && (uri[len] == parser->m_namespaceSeparator)) {
+      return XML_ERROR_SYNTAX;
+    }
   }
   isXML = isXML && len == xmlLen;
   isXMLNS = isXMLNS && len == xmlnsLen;
@@ -3660,6 +3775,22 @@ addBinding(XML_Parser parser, PREFIX *prefix, const ATTRIBUTE_ID *attId,
   if (parser->m_freeBindingList) {
     b = parser->m_freeBindingList;
     if (len > b->uriAlloc) {
+
+      /* Detect and prevent integer overflow */
+      if (len > INT_MAX - EXPAND_SPARE) {
+        return XML_ERROR_NO_MEMORY;
+      }
+
+      /* Detect and prevent integer overflow.
+       * The preprocessor guard addresses the "always false" warning
+       * from -Wtype-limits on platforms where
+       * sizeof(unsigned int) < sizeof(size_t), e.g. on x86_64. */
+#if UINT_MAX >= SIZE_MAX
+      if ((unsigned)(len + EXPAND_SPARE) > (size_t)(-1) / sizeof(XML_Char)) {
+        return XML_ERROR_NO_MEMORY;
+      }
+#endif
+
       XML_Char *temp = (XML_Char *)REALLOC(
           parser, b->uri, sizeof(XML_Char) * (len + EXPAND_SPARE));
       if (temp == NULL)
@@ -3672,6 +3803,21 @@ addBinding(XML_Parser parser, PREFIX *prefix, const ATTRIBUTE_ID *attId,
     b = (BINDING *)MALLOC(parser, sizeof(BINDING));
     if (! b)
       return XML_ERROR_NO_MEMORY;
+
+    /* Detect and prevent integer overflow */
+    if (len > INT_MAX - EXPAND_SPARE) {
+      return XML_ERROR_NO_MEMORY;
+    }
+    /* Detect and prevent integer overflow.
+     * The preprocessor guard addresses the "always false" warning
+     * from -Wtype-limits on platforms where
+     * sizeof(unsigned int) < sizeof(size_t), e.g. on x86_64. */
+#if UINT_MAX >= SIZE_MAX
+    if ((unsigned)(len + EXPAND_SPARE) > (size_t)(-1) / sizeof(XML_Char)) {
+      return XML_ERROR_NO_MEMORY;
+    }
+#endif
+
     b->uri
         = (XML_Char *)MALLOC(parser, sizeof(XML_Char) * (len + EXPAND_SPARE));
     if (! b->uri) {
@@ -3709,7 +3855,7 @@ cdataSectionProcessor(XML_Parser parser, const char *start, const char *end,
                       const char **endPtr) {
   enum XML_Error result
       = doCdataSection(parser, parser->m_encoding, &start, end, endPtr,
-                       (XML_Bool)! parser->m_parsingStatus.finalBuffer);
+                       (XML_Bool)! parser->m_parsingStatus.finalBuffer, XML_ACCOUNT_DIRECT);
   if (result != XML_ERROR_NONE)
     return result;
   if (start) {
@@ -3729,7 +3875,8 @@ cdataSectionProcessor(XML_Parser parser, const char *start, const char *end,
 */
 static enum XML_Error
 doCdataSection(XML_Parser parser, const ENCODING *enc, const char **startPtr,
-               const char *end, const char **nextPtr, XML_Bool haveMore) {
+               const char *end, const char **nextPtr, XML_Bool haveMore,
+               enum XML_Account account) {
   const char *s = *startPtr;
   const char **eventPP;
   const char **eventEndPP;
@@ -3748,8 +3895,7 @@ doCdataSection(XML_Parser parser, const ENCODING *enc, const char **startPtr,
     const char *next = s; /* in case of XML_TOK_NONE or XML_TOK_PARTIAL */
     int tok = XmlCdataSectionTok(enc, s, end, &next);
 #ifdef XML_DTD
-    if (! accountingDiffTolerated(parser, tok, s, next, __LINE__,
-                                  XML_ACCOUNT_DIRECT)) {
+    if (! accountingDiffTolerated(parser, tok, s, next, __LINE__, account)) {
       accountingOnAbort(parser);
       return XML_ERROR_AMPLIFICATION_LIMIT_BREACH;
     }
@@ -4996,6 +5142,11 @@ doProlog(XML_Parser parser, const ENCODING *enc, const char *s, const char *end,
       if (parser->m_prologState.level >= parser->m_groupSize) {
         if (parser->m_groupSize) {
           {
+            /* Detect and prevent integer overflow */
+            if (parser->m_groupSize > (unsigned int)(-1) / 2u) {
+              return XML_ERROR_NO_MEMORY;
+            }
+
             char *const new_connector = (char *)REALLOC(
                 parser, parser->m_groupConnector, parser->m_groupSize *= 2);
             if (new_connector == NULL) {
@@ -5006,6 +5157,16 @@ doProlog(XML_Parser parser, const ENCODING *enc, const char *s, const char *end,
           }
 
           if (dtd->scaffIndex) {
+            /* Detect and prevent integer overflow.
+             * The preprocessor guard addresses the "always false" warning
+             * from -Wtype-limits on platforms where
+             * sizeof(unsigned int) < sizeof(size_t), e.g. on x86_64. */
+#if UINT_MAX >= SIZE_MAX
+            if (parser->m_groupSize > (size_t)(-1) / sizeof(int)) {
+              return XML_ERROR_NO_MEMORY;
+            }
+#endif
+
             int *const new_scaff_index = (int *)REALLOC(
                 parser, dtd->scaffIndex, parser->m_groupSize * sizeof(int));
             if (new_scaff_index == NULL)
@@ -5214,7 +5375,7 @@ doProlog(XML_Parser parser, const ENCODING *enc, const char *s, const char *end,
       if (dtd->in_eldecl) {
         ELEMENT_TYPE *el;
         const XML_Char *name;
-        int nameLen;
+        size_t nameLen;
         const char *nxt
             = (quant == XML_CQUANT_NONE ? next : next - enc->minBytesPerChar);
         int myindex = nextScaffoldPart(parser);
@@ -5230,7 +5391,13 @@ doProlog(XML_Parser parser, const ENCODING *enc, const char *s, const char *end,
         nameLen = 0;
         for (; name[nameLen++];)
           ;
-        dtd->contentStringLen += nameLen;
+
+        /* Detect and prevent integer overflow */
+        if (nameLen > UINT_MAX - dtd->contentStringLen) {
+          return XML_ERROR_NO_MEMORY;
+        }
+
+        dtd->contentStringLen += (unsigned)nameLen;
         if (parser->m_elementDeclHandler)
           handleDefault = XML_FALSE;
       }
@@ -6076,7 +6243,24 @@ defineAttribute(ELEMENT_TYPE *type, ATTRIBUTE_ID *attId, XML_Bool isCdata,
       }
     } else {
       DEFAULT_ATTRIBUTE *temp;
+
+      /* Detect and prevent integer overflow */
+      if (type->allocDefaultAtts > INT_MAX / 2) {
+        return 0;
+      }
+
       int count = type->allocDefaultAtts * 2;
+
+      /* Detect and prevent integer overflow.
+       * The preprocessor guard addresses the "always false" warning
+       * from -Wtype-limits on platforms where
+       * sizeof(unsigned int) < sizeof(size_t), e.g. on x86_64. */
+#if UINT_MAX >= SIZE_MAX
+      if ((unsigned)count > (size_t)(-1) / sizeof(DEFAULT_ATTRIBUTE)) {
+        return 0;
+      }
+#endif
+
       temp = (DEFAULT_ATTRIBUTE *)REALLOC(parser, type->defaultAtts,
                                           (count * sizeof(DEFAULT_ATTRIBUTE)));
       if (temp == NULL)
@@ -6727,8 +6911,20 @@ lookup(XML_Parser parser, HASH_TABLE *table, KEY name, size_t createSize) {
     /* check for overflow (table is half full) */
     if (table->used >> (table->power - 1)) {
       unsigned char newPower = table->power + 1;
+
+      /* Detect and prevent invalid shift */
+      if (newPower >= sizeof(unsigned long) * 8 /* bits per byte */) {
+        return NULL;
+      }
+
       size_t newSize = (size_t)1 << newPower;
       unsigned long newMask = (unsigned long)newSize - 1;
+
+      /* Detect and prevent integer overflow */
+      if (newSize > (size_t)(-1) / sizeof(NAMED *)) {
+        return NULL;
+      }
+
       size_t tsize = newSize * sizeof(NAMED *);
       NAMED **newV = (NAMED **)table->mem->malloc_fcn(tsize);
       if (! newV)
@@ -7078,6 +7274,20 @@ nextScaffoldPart(XML_Parser parser) {
   if (dtd->scaffCount >= dtd->scaffSize) {
     CONTENT_SCAFFOLD *temp;
     if (dtd->scaffold) {
+      /* Detect and prevent integer overflow */
+      if (dtd->scaffSize > UINT_MAX / 2u) {
+        return -1;
+      }
+      /* Detect and prevent integer overflow.
+       * The preprocessor guard addresses the "always false" warning
+       * from -Wtype-limits on platforms where
+       * sizeof(unsigned int) < sizeof(size_t), e.g. on x86_64. */
+#if UINT_MAX >= SIZE_MAX
+      if (dtd->scaffSize > (size_t)(-1) / 2u / sizeof(CONTENT_SCAFFOLD)) {
+        return -1;
+      }
+#endif
+
       temp = (CONTENT_SCAFFOLD *)REALLOC(
           parser, dtd->scaffold, dtd->scaffSize * 2 * sizeof(CONTENT_SCAFFOLD));
       if (temp == NULL)
@@ -7109,55 +7319,126 @@ nextScaffoldPart(XML_Parser parser) {
   return next;
 }
 
-static void
-build_node(XML_Parser parser, int src_node, XML_Content *dest,
-           XML_Content **contpos, XML_Char **strpos) {
-  DTD *const dtd = parser->m_dtd; /* save one level of indirection */
-  dest->type = dtd->scaffold[src_node].type;
-  dest->quant = dtd->scaffold[src_node].quant;
-  if (dest->type == XML_CTYPE_NAME) {
-    const XML_Char *src;
-    dest->name = *strpos;
-    src = dtd->scaffold[src_node].name;
-    for (;;) {
-      *(*strpos)++ = *src;
-      if (! *src)
-        break;
-      src++;
-    }
-    dest->numchildren = 0;
-    dest->children = NULL;
-  } else {
-    unsigned int i;
-    int cn;
-    dest->numchildren = dtd->scaffold[src_node].childcnt;
-    dest->children = *contpos;
-    *contpos += dest->numchildren;
-    for (i = 0, cn = dtd->scaffold[src_node].firstchild; i < dest->numchildren;
-         i++, cn = dtd->scaffold[cn].nextsib) {
-      build_node(parser, cn, &(dest->children[i]), contpos, strpos);
-    }
-    dest->name = NULL;
-  }
-}
-
 static XML_Content *
 build_model(XML_Parser parser) {
   DTD *const dtd = parser->m_dtd; /* save one level of indirection */
   XML_Content *ret;
-  XML_Content *cpos;
-  XML_Char *str;
-  int allocsize = (dtd->scaffCount * sizeof(XML_Content)
-                   + (dtd->contentStringLen * sizeof(XML_Char)));
+  XML_Char *str; /* the current string writing location */
+
+  /* Detect and prevent integer overflow.
+   * The preprocessor guard addresses the "always false" warning
+   * from -Wtype-limits on platforms where
+   * sizeof(unsigned int) < sizeof(size_t), e.g. on x86_64. */
+#if UINT_MAX >= SIZE_MAX
+  if (dtd->scaffCount > (size_t)(-1) / sizeof(XML_Content)) {
+    return NULL;
+  }
+  if (dtd->contentStringLen > (size_t)(-1) / sizeof(XML_Char)) {
+    return NULL;
+  }
+#endif
+  if (dtd->scaffCount * sizeof(XML_Content)
+      > (size_t)(-1) - dtd->contentStringLen * sizeof(XML_Char)) {
+    return NULL;
+  }
+
+  const size_t allocsize = (dtd->scaffCount * sizeof(XML_Content)
+                            + (dtd->contentStringLen * sizeof(XML_Char)));
 
   ret = (XML_Content *)MALLOC(parser, allocsize);
   if (! ret)
     return NULL;
 
-  str = (XML_Char *)(&ret[dtd->scaffCount]);
-  cpos = &ret[1];
+  /* What follows is an iterative implementation (of what was previously done
+   * recursively in a dedicated function called "build_node".  The old recursive
+   * build_node could be forced into stack exhaustion from input as small as a
+   * few megabyte, and so that was a security issue.  Hence, a function call
+   * stack is avoided now by resolving recursion.)
+   *
+   * The iterative approach works as follows:
+   *
+   * - We have two writing pointers, both walking up the result array; one does
+   *   the work, the other creates "jobs" for its colleague to do, and leads
+   *   the way:
+   *
+   *   - The faster one, pointer jobDest, always leads and writes "what job
+   *     to do" by the other, once they reach that place in the
+   *     array: leader "jobDest" stores the source node array index (relative
+   *     to array dtd->scaffold) in field "numchildren".
+   *
+   *   - The slower one, pointer dest, looks at the value stored in the
+   *     "numchildren" field (which actually holds a source node array index
+   *     at that time) and puts the real data from dtd->scaffold in.
+   *
+   * - Before the loop starts, jobDest writes source array index 0
+   *   (where the root node is located) so that dest will have something to do
+   *   when it starts operation.
+   *
+   * - Whenever nodes with children are encountered, jobDest appends
+   *   them as new jobs, in order.  As a result, tree node siblings are
+   *   adjacent in the resulting array, for example:
+   *
+   *     [0] root, has two children
+   *       [1] first child of 0, has three children
+   *         [3] first child of 1, does not have children
+   *         [4] second child of 1, does not have children
+   *         [5] third child of 1, does not have children
+   *       [2] second child of 0, does not have children
+   *
+   *   Or (the same data) presented in flat array view:
+   *
+   *     [0] root, has two children
+   *
+   *     [1] first child of 0, has three children
+   *     [2] second child of 0, does not have children
+   *
+   *     [3] first child of 1, does not have children
+   *     [4] second child of 1, does not have children
+   *     [5] third child of 1, does not have children
+   *
+   * - The algorithm repeats until all target array indices have been processed.
+   */
+  XML_Content *dest = ret; /* tree node writing location, moves upwards */
+  XML_Content *const destLimit = &ret[dtd->scaffCount];
+  XML_Content *jobDest = ret; /* next free writing location in target array */
+  str = (XML_Char *)&ret[dtd->scaffCount];
 
-  build_node(parser, 0, ret, &cpos, &str);
+  /* Add the starting job, the root node (index 0) of the source tree  */
+  (jobDest++)->numchildren = 0;
+
+  for (; dest < destLimit; dest++) {
+    /* Retrieve source tree array index from job storage */
+    const int src_node = (int)dest->numchildren;
+
+    /* Convert item */
+    dest->type = dtd->scaffold[src_node].type;
+    dest->quant = dtd->scaffold[src_node].quant;
+    if (dest->type == XML_CTYPE_NAME) {
+      const XML_Char *src;
+      dest->name = str;
+      src = dtd->scaffold[src_node].name;
+      for (;;) {
+        *str++ = *src;
+        if (! *src)
+          break;
+        src++;
+      }
+      dest->numchildren = 0;
+      dest->children = NULL;
+    } else {
+      unsigned int i;
+      int cn;
+      dest->name = NULL;
+      dest->numchildren = dtd->scaffold[src_node].childcnt;
+      dest->children = jobDest;
+
+      /* Append scaffold indices of children to array */
+      for (i = 0, cn = dtd->scaffold[src_node].firstchild;
+           i < dest->numchildren; i++, cn = dtd->scaffold[cn].nextsib)
+        (jobDest++)->numchildren = (unsigned int)cn;
+    }
+  }
+
   return ret;
 }
 
@@ -7186,7 +7467,7 @@ getElementType(XML_Parser parser, const ENCODING *enc, const char *ptr,
 
 static XML_Char *
 copyString(const XML_Char *s, const XML_Memory_Handling_Suite *memsuite) {
-  int charsRequired = 0;
+  size_t charsRequired = 0;
   XML_Char *result;
 
   /* First determine how long the string is */
