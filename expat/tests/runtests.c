@@ -7438,7 +7438,7 @@ START_TEST(test_misc_version) {
     fail("Version mismatch");
 
 #if ! defined(XML_UNICODE) || defined(XML_UNICODE_WCHAR_T)
-  if (xcstrcmp(version_text, XCS("expat_2.2.10"))) /* needs bump on releases */
+  if (xcstrcmp(version_text, XCS("expat_2.2.13"))) /* needs bump on releases */
     fail("XML_*_VERSION in expat.h out of sync?\n");
 #else
   /* If we have XML_UNICODE defined but not XML_UNICODE_WCHAR_T
@@ -9924,6 +9924,16 @@ START_TEST(test_nsalloc_parse_buffer) {
 
   /* Try a parse before the start of the world */
   /* (Exercises new code path) */
+  if (XML_ParseBuffer(g_parser, 0, XML_FALSE) != XML_STATUS_ERROR)
+    fail("Pre-init XML_ParseBuffer not faulted");
+  if (XML_GetErrorCode(g_parser) != XML_ERROR_NO_BUFFER)
+    fail("Pre-init XML_ParseBuffer faulted for wrong reason");
+
+  buffer = XML_GetBuffer(g_parser, 1 /* any small number greater than 0 */);
+  if (buffer == NULL)
+    fail("Could not acquire parse buffer");
+
+
   allocation_count = 0;
   if (XML_ParseBuffer(g_parser, 0, XML_FALSE) != XML_STATUS_ERROR)
     fail("Pre-init XML_ParseBuffer not faulted");
