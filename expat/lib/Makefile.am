@@ -34,16 +34,21 @@ include_HEADERS = \
     expat_external.h
 
 lib_LTLIBRARIES = libexpat.la
+noinst_LTLIBRARIES = libexpatinternal.la
 
 libexpat_la_LDFLAGS = \
     @AM_LDFLAGS@ \
     -no-undefined \
     -version-info @LIBCURRENT@:@LIBREVISION@:@LIBAGE@
 
-libexpat_la_SOURCES = \
+libexpat_la_SOURCES =
+
+libexpatinternal_la_SOURCES = \
     xmlparse.c \
     xmltok.c \
     xmlrole.c
+
+libexpat_la_LIBADD = libexpatinternal.la
 
 doc_DATA = \
     ../AUTHORS \
